@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-XREIGN Auto Daily Claim + Wheel Spin + Task Clear
+XREIGN Auto Daily Claim + Wheel Spin
 Multi-account support with session reuse and auto re-login.
 
 Accounts: twitter.txt (auth_token:ct0 per line, # for comments)
@@ -11,7 +11,6 @@ Usage:
   python3 daily.py --account 0      # specific account
   python3 daily.py --login          # force re-login all
   python3 daily.py --loop           # run daily (24h loop)
-  python3 daily.py --no-tasks       # skip task clearing step
 """
 
 import asyncio
@@ -278,78 +277,6 @@ async def claim_badges(page):
     return claimed
 
 
-async def clear_tasks(page, max_tasks=30):
-    """
-    Clear/complete available tasks on the /tasks page.
-
-    Generic approach (page structure isn't known ahead of time, so this
-    scans for common action-button labels used on quest/task platforms):
-      1. Go to /tasks
-      2. Find task cards/rows that are not yet completed
-      3. Click their action button (Start/Go/Verify/Complete/Claim)
-      4. If a "Verify" step is needed after "Start", wait and click Verify
-      5. Repeat until no more actionable tasks or max_tasks reached
-
-    Returns a list of task names that were successfully cleared.
-    """
-    await page.goto(f"{XREIGN_URL}/tasks", wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(3)
-
-    cleared = []
-    action_labels = ["Claim", "Complete", "Verify", "Go", "Start", "Check"]
-    skip_labels = ["Completed", "Claimed", "Done"]
-
-    for _ in range(max_tasks):
-        # Find one actionable task button that isn't already marked done
-        clicked_label = await page.evaluate("""
-            (() => {
-                const actionWords = %s;
-                const skipWords = %s;
-                const btns = Array.from(document.querySelectorAll('button'));
-                for (const b of btns) {
-                    const t = (b.textContent || '').trim();
-                    if (!t) continue;
-                    if (skipWords.some(s => t.includes(s))) continue;
-                    if (b.disabled) continue;
-                    if (actionWords.some(a => t === a || t.startsWith(a))) {
-                        b.click();
-                        return t;
-                    }
-                }
-                return null;
-            })()
-        """ % (json.dumps(action_labels), json.dumps(skip_labels)))
-
-        if not clicked_label:
-            break
-
-        await asyncio.sleep(4)
-
-        # If a modal opened with its own "Verify"/"Claim" button, click it too
-        await page.evaluate("""
-            (() => {
-                const words = ['Verify', 'Claim', 'Confirm'];
-                const btns = Array.from(document.querySelectorAll('button'));
-                for (const b of btns) {
-                    const t = (b.textContent || '').trim();
-                    if (words.some(w => t === w) && !b.disabled) {
-                        b.click();
-                        break;
-                    }
-                }
-            })()
-        """)
-        await asyncio.sleep(3)
-
-        # Close any confirmation modal
-        await page.evaluate("document.querySelectorAll('button').forEach(b => { if(b.textContent.includes('Close')) b.click(); })")
-        await asyncio.sleep(1)
-
-        cleared.append(clicked_label)
-
-    return cleared
-
-
 async def spin_wheel(page, spins=5):
     """Spin the Reign Wheel."""
     await page.goto(f"{XREIGN_URL}/wheel", wait_until="domcontentloaded", timeout=30000)
@@ -363,7 +290,7 @@ async def spin_wheel(page, spins=5):
     return results
 
 
-async def process_account(index, account, force_login=False, do_tasks=True):
+async def process_account(index, account, force_login=False):
     """Process single account."""
     print(f"\n{'='*50}")
     print(f"  Account {index}: {account['auth_token'][:10]}...")
@@ -425,19 +352,10 @@ async def process_account(index, account, force_login=False, do_tasks=True):
         badges = await claim_badges(page)
         print(f"  [5] {'✅ ' + ', '.join(badges) if badges else 'No badges'}")
 
-        # Clear tasks
-        tasks_cleared = []
-        if do_tasks:
-            print(f"  [6] Clearing tasks...")
-            tasks_cleared = await clear_tasks(page)
-            print(f"  [6] {'✅ ' + str(len(tasks_cleared)) + ' task action(s)' if tasks_cleared else 'No actionable tasks'}")
-        else:
-            print(f"  [6] Skipped (--no-tasks)")
-
         # Spin wheel
-        print(f"  [7] Spinning wheel...")
+        print(f"  [6] Spinning wheel...")
         spins = await spin_wheel(page, 5)
-        print(f"  [7] ✅ {len(spins)} spins")
+        print(f"  [6] ✅ {len(spins)} spins")
 
         # Get new balance
         balance_after = await get_balance(page)
@@ -452,7 +370,6 @@ async def process_account(index, account, force_login=False, do_tasks=True):
         print(f"    Balance: {balance_before} → {balance_after} (+{earned})")
         print(f"    Daily: {'✅' if daily else '❌'}")
         print(f"    Badges: {len(badges)}")
-        print(f"    Tasks: {len(tasks_cleared)}")
         print(f"    Session: saved")
 
         result = {
@@ -464,7 +381,6 @@ async def process_account(index, account, force_login=False, do_tasks=True):
             "earned": earned,
             "daily": daily,
             "badges": badges,
-            "tasks_cleared": tasks_cleared,
             "timestamp": int(time.time()),
         }
 
@@ -478,7 +394,6 @@ async def main():
     parser.add_argument("--login", action="store_true", help="Force re-login")
     parser.add_argument("--account", type=int, help="Specific account index")
     parser.add_argument("--loop", action="store_true", help="Run daily loop")
-    parser.add_argument("--no-tasks", action="store_true", help="Skip task clearing step")
     args = parser.parse_args()
 
     accounts = load_accounts()
@@ -503,7 +418,7 @@ async def main():
 
     results = []
     for i, account in enumerate(accounts):
-        result = await process_account(i, account, force_login=args.login, do_tasks=not args.no_tasks)
+        result = await process_account(i, account, force_login=args.login)
         results.append(result)
         save_result(result)
 
